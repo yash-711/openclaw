@@ -271,6 +271,17 @@ export type MemorySearchConfig = {
   experimental?: {
     /** Enable session transcript indexing (experimental, default: false). */
     sessionMemory?: boolean;
+    /** Enable the 3-tier memory engine (hot session + warm sqlite + cold markdown). */
+    threeTier?: boolean;
+    /** Hot session settings (requires threeTier). */
+    hotSession?: {
+      /** Enable hot session in-memory search (default: false). */
+      enabled?: boolean;
+      /** Maximum retained transcript lines (default: 200). */
+      maxLines?: number;
+    };
+    /** Surface token / usage metrics (best-effort, approximate for some providers). */
+    tokenMetrics?: boolean;
   };
   /** Embedding provider mode. */
   provider?: "openai" | "gemini" | "local" | "voyage";
@@ -345,6 +356,8 @@ export type MemorySearchConfig = {
     hybrid?: {
       /** Enable hybrid BM25 + vector search (default: true). */
       enabled?: boolean;
+      /** Merge strategy for hybrid results (default: "weighted"). */
+      merge?: "weighted" | "rrf";
       /** Weight for vector similarity when merging results (0-1). */
       vectorWeight?: number;
       /** Weight for BM25 text relevance when merging results (0-1). */
@@ -365,6 +378,8 @@ export type MemorySearchConfig = {
         /** Half-life in days for exponential decay (default: 30). */
         halfLifeDays?: number;
       };
+      /** RRF constant (only used when merge="rrf", default: 60). */
+      rrfK?: number;
     };
   };
   /** Index cache behavior. */

@@ -24,6 +24,12 @@ export type ResolvedMemorySearchConfig = {
   };
   experimental: {
     sessionMemory: boolean;
+    threeTier: boolean;
+    hotSession: {
+      enabled: boolean;
+      maxLines: number;
+    };
+    tokenMetrics: boolean;
   };
   fallback: "openai" | "gemini" | "local" | "voyage" | "none";
   model: string;
@@ -59,6 +65,7 @@ export type ResolvedMemorySearchConfig = {
     minScore: number;
     hybrid: {
       enabled: boolean;
+      merge: "weighted" | "rrf";
       vectorWeight: number;
       textWeight: number;
       candidateMultiplier: number;
@@ -70,6 +77,7 @@ export type ResolvedMemorySearchConfig = {
         enabled: boolean;
         halfLifeDays: number;
       };
+      rrfK: number;
     };
   };
   cache: {
@@ -89,6 +97,8 @@ const DEFAULT_SESSION_DELTA_MESSAGES = 50;
 const DEFAULT_MAX_RESULTS = 6;
 const DEFAULT_MIN_SCORE = 0.35;
 const DEFAULT_HYBRID_ENABLED = true;
+const DEFAULT_HYBRID_MERGE: "weighted" | "rrf" = "weighted";
+const DEFAULT_HYBRID_RRF_K = 60;
 const DEFAULT_HYBRID_VECTOR_WEIGHT = 0.7;
 const DEFAULT_HYBRID_TEXT_WEIGHT = 0.3;
 const DEFAULT_HYBRID_CANDIDATE_MULTIPLIER = 4;
@@ -137,6 +147,18 @@ function mergeConfig(
   const enabled = overrides?.enabled ?? defaults?.enabled ?? true;
   const sessionMemory =
     overrides?.experimental?.sessionMemory ?? defaults?.experimental?.sessionMemory ?? false;
+  const threeTier =
+    overrides?.experimental?.threeTier ?? defaults?.experimental?.threeTier ?? false;
+  const hotSessionEnabled =
+    overrides?.experimental?.hotSession?.enabled ??
+    defaults?.experimental?.hotSession?.enabled ??
+    false;
+  const hotSessionMaxLines =
+    overrides?.experimental?.hotSession?.maxLines ??
+    defaults?.experimental?.hotSession?.maxLines ??
+    200;
+  const tokenMetrics =
+    overrides?.experimental?.tokenMetrics ?? defaults?.experimental?.tokenMetrics ?? false;
   const provider = overrides?.provider ?? defaults?.provider ?? "auto";
   const defaultRemote = defaults?.remote;
   const overrideRemote = overrides?.remote;
@@ -236,6 +258,9 @@ function mergeConfig(
       overrides?.query?.hybrid?.enabled ??
       defaults?.query?.hybrid?.enabled ??
       DEFAULT_HYBRID_ENABLED,
+    merge:
+      overrides?.query?.hybrid?.merge ?? defaults?.query?.hybrid?.merge ?? DEFAULT_HYBRID_MERGE,
+    rrfK: overrides?.query?.hybrid?.rrfK ?? defaults?.query?.hybrid?.rrfK ?? DEFAULT_HYBRID_RRF_K,
     vectorWeight:
       overrides?.query?.hybrid?.vectorWeight ??
       defaults?.query?.hybrid?.vectorWeight ??
@@ -300,6 +325,12 @@ function mergeConfig(
     remote,
     experimental: {
       sessionMemory,
+      threeTier: Boolean(threeTier),
+      hotSession: {
+        enabled: Boolean(threeTier) && Boolean(hotSessionEnabled),
+        maxLines: clampInt(hotSessionMaxLines, 10, 5000),
+      },
+      tokenMetrics: Boolean(tokenMetrics),
     },
     fallback,
     model,
@@ -318,6 +349,7 @@ function mergeConfig(
       minScore,
       hybrid: {
         enabled: Boolean(hybrid.enabled),
+        merge: hybrid.merge === "rrf" ? "rrf" : "weighted",
         vectorWeight: normalizedVectorWeight,
         textWeight: normalizedTextWeight,
         candidateMultiplier,
@@ -331,6 +363,7 @@ function mergeConfig(
           enabled: Boolean(hybrid.temporalDecay.enabled),
           halfLifeDays: temporalDecayHalfLifeDays,
         },
+        rrfK: clampInt(hybrid.rrfK, 1, 500),
       },
     },
     cache: {

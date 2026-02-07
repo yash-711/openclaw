@@ -6,6 +6,12 @@ import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope
 import type { ResolvedMemorySearchConfig } from "../agents/memory-search.js";
 import { resolveMemorySearchConfig } from "../agents/memory-search.js";
 import type { OpenClawConfig } from "../config/config.js";
+import {
+  resolveDefaultSessionStorePath,
+  resolveSessionTranscriptPath,
+  resolveSessionTranscriptsDirForAgent,
+} from "../config/sessions/paths.js";
+import { loadSessionStore } from "../config/sessions/store.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   createEmbeddingProvider,
@@ -15,7 +21,8 @@ import {
   type OpenAiEmbeddingClient,
   type VoyageEmbeddingClient,
 } from "./embeddings.js";
-import { bm25RankToScore, buildFtsQuery, mergeHybridResults } from "./hybrid.js";
+import { HotSessionIndex } from "./hot-session.js";
+import { bm25RankToScore, buildFtsQuery, mergeHybridResults, mergeHybridResultsRrf } from "./hybrid.js";
 import { isMemoryPath, normalizeExtraMemoryPaths } from "./internal.js";
 import { MemoryManagerEmbeddingOps } from "./manager-embedding-ops.js";
 import { searchKeyword, searchVector } from "./manager-search.js";
@@ -83,6 +90,15 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
   protected watcher: FSWatcher | null = null;
   protected watchTimer: NodeJS.Timeout | null = null;
   protected sessionWatchTimer: NodeJS.Timeout | null = null;
+  private hotIndex: HotSessionIndex | null = null;
+  private tokenMetrics = {
+    enabled: false,
+    queryCount: 0,
+    queryChars: 0,
+    indexCount: 0,
+    indexChars: 0,
+    lastQueryAt: 0,
+  };
   protected sessionUnsubscribe: (() => void) | null = null;
   protected intervalTimer: NodeJS.Timeout | null = null;
   protected closed = false;
@@ -182,6 +198,14 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     const statusOnly = params.purpose === "status";
     this.dirty = this.sources.has("memory") && (statusOnly ? !meta : true);
     this.batch = this.resolveBatchConfig();
+
+    // Initialize experimental features
+    this.tokenMetrics.enabled = Boolean(this.settings.experimental?.tokenMetrics);
+    if (this.settings.experimental?.threeTier && this.settings.experimental?.hotSession?.enabled) {
+      this.hotIndex = new HotSessionIndex({
+        maxLines: this.settings.experimental.hotSession.maxLines,
+      });
+    }
   }
 
   async warmSession(sessionKey?: string): Promise<void> {
@@ -285,6 +309,19 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       temporalDecay: hybrid.temporalDecay,
     });
 
+    // Hot session results (experimental 3-tier)
+    const hotResults = await this.searchHot({
+      query: cleaned,
+      maxResults,
+      sessionKey: opts?.sessionKey,
+    });
+    if (hotResults.length > 0) {
+      const warm = merged
+        .filter((entry) => entry.score >= minScore)
+        .slice(0, Math.max(0, maxResults - hotResults.length));
+      return [...hotResults, ...warm].slice(0, maxResults);
+    }
+
     return merged.filter((entry) => entry.score >= minScore).slice(0, maxResults);
   }
 
@@ -312,6 +349,47 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
 
   private buildFtsQuery(raw: string): string | null {
     return buildFtsQuery(raw);
+  }
+
+  private async searchHot(params: {
+    query: string;
+    maxResults: number;
+    sessionKey?: string;
+  }): Promise<MemorySearchResult[]> {
+    if (!this.hotIndex) {
+      return [];
+    }
+
+    // Resolve session transcript file
+    const storePath = resolveDefaultSessionStorePath(this.cfg);
+    const store = loadSessionStore(storePath);
+    const session = params.sessionKey
+      ? store.sessions.find((s) => s.key === params.sessionKey)
+      : store.sessions[store.sessions.length - 1];
+    if (!session) {
+      return [];
+    }
+
+    const transcriptDir = resolveSessionTranscriptsDirForAgent(this.cfg, this.agentId);
+    const sessionFile = resolveSessionTranscriptPath(transcriptDir, session.key);
+
+    await this.hotIndex.update(sessionFile).catch(() => undefined);
+    const relPath = path.relative(this.workspaceDir, sessionFile);
+    const results = this.hotIndex.search({
+      absPath: sessionFile,
+      relPath,
+      query: params.query,
+      limit: params.maxResults,
+    });
+
+    return results.map((r) => ({
+      path: r.path,
+      startLine: r.startLine,
+      endLine: r.endLine,
+      score: r.score,
+      snippet: r.snippet,
+      source: "hot" as MemorySource,
+    }));
   }
 
   private async searchKeyword(
@@ -346,25 +424,33 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     mmr?: { enabled: boolean; lambda: number };
     temporalDecay?: { enabled: boolean; halfLifeDays: number };
   }): Promise<MemorySearchResult[]> {
+    const vector = params.vector.map((r) => ({
+      id: r.id,
+      path: r.path,
+      startLine: r.startLine,
+      endLine: r.endLine,
+      source: r.source,
+      snippet: r.snippet,
+      vectorScore: r.score,
+    }));
+    const keyword = params.keyword.map((r) => ({
+      id: r.id,
+      path: r.path,
+      startLine: r.startLine,
+      endLine: r.endLine,
+      source: r.source,
+      snippet: r.snippet,
+      textScore: r.textScore,
+    }));
+
+    if (this.settings.query.hybrid.merge === "rrf") {
+      const merged = mergeHybridResultsRrf({ vector, keyword, k: this.settings.query.hybrid.rrfK });
+      return Promise.resolve(merged.map((entry) => entry as MemorySearchResult));
+    }
+
     return mergeHybridResults({
-      vector: params.vector.map((r) => ({
-        id: r.id,
-        path: r.path,
-        startLine: r.startLine,
-        endLine: r.endLine,
-        source: r.source,
-        snippet: r.snippet,
-        vectorScore: r.score,
-      })),
-      keyword: params.keyword.map((r) => ({
-        id: r.id,
-        path: r.path,
-        startLine: r.startLine,
-        endLine: r.endLine,
-        source: r.source,
-        snippet: r.snippet,
-        textScore: r.textScore,
-      })),
+      vector,
+      keyword,
       vectorWeight: params.vectorWeight,
       textWeight: params.textWeight,
       mmr: params.mmr,
@@ -556,6 +642,30 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       custom: {
         searchMode,
         providerUnavailableReason: this.providerUnavailableReason,
+        ...(this.tokenMetrics?.enabled
+          ? {
+              tokenMetrics: {
+                queryCount: this.tokenMetrics.queryCount,
+                queryChars: this.tokenMetrics.queryChars,
+                queryApproxTokens: Math.ceil(this.tokenMetrics.queryChars / 4),
+                indexCount: this.tokenMetrics.indexCount,
+                indexChars: this.tokenMetrics.indexChars,
+                indexApproxTokens: Math.ceil(this.tokenMetrics.indexChars / 4),
+                lastQueryAt: this.tokenMetrics.lastQueryAt,
+              },
+            }
+          : {}),
+        ...(this.settings.experimental?.threeTier
+          ? {
+              threeTier: {
+                enabled: true,
+                hotSession: {
+                  enabled: Boolean(this.hotIndex),
+                  maxLines: this.settings.experimental?.hotSession?.maxLines,
+                },
+              },
+            }
+          : {}),
       },
     };
   }

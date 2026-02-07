@@ -147,3 +147,76 @@ export async function mergeHybridResults(params: {
 
   return sorted;
 }
+
+export function mergeHybridResultsRrf(params: {
+  vector: HybridVectorResult[];
+  keyword: HybridKeywordResult[];
+  k: number;
+}): Array<{
+  path: string;
+  startLine: number;
+  endLine: number;
+  score: number;
+  snippet: string;
+  source: HybridSource;
+}> {
+  const byId = new Map<
+    string,
+    {
+      id: string;
+      path: string;
+      startLine: number;
+      endLine: number;
+      source: HybridSource;
+      snippet: string;
+      score: number;
+    }
+  >();
+
+  const addRanked = (
+    list: Array<{
+      id: string;
+      path: string;
+      startLine: number;
+      endLine: number;
+      source: string;
+      snippet: string;
+    }>,
+  ) => {
+    for (let i = 0; i < list.length; i += 1) {
+      const r = list[i]!;
+      const inc = 1 / (params.k + (i + 1));
+      const existing = byId.get(r.id);
+      if (existing) {
+        existing.score += inc;
+        if (r.snippet && r.snippet.length > 0) {
+          existing.snippet = r.snippet;
+        }
+      } else {
+        byId.set(r.id, {
+          id: r.id,
+          path: r.path,
+          startLine: r.startLine,
+          endLine: r.endLine,
+          source: r.source,
+          snippet: r.snippet,
+          score: inc,
+        });
+      }
+    }
+  };
+
+  addRanked(params.vector);
+  addRanked(params.keyword);
+
+  return Array.from(byId.values())
+    .map((r) => ({
+      path: r.path,
+      startLine: r.startLine,
+      endLine: r.endLine,
+      score: r.score,
+      snippet: r.snippet,
+      source: r.source,
+    }))
+    .toSorted((a, b) => b.score - a.score);
+}
