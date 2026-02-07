@@ -73,5 +73,8 @@ USER.md
 
 # Agent credentials and memory (NEVER COMMIT)
 memory/
+# NOTE: we *do* commit source code under src/memory.
+!src/memory/
+!src/memory/**
 .agent/*.json
 !.agent/workflows/

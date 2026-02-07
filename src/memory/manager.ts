@@ -16,7 +16,12 @@ import type {
 } from "./types.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { resolveMemorySearchConfig } from "../agents/memory-search.js";
-import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
+import {
+  resolveDefaultSessionStorePath,
+  resolveSessionTranscriptPath,
+  resolveSessionTranscriptsDirForAgent,
+} from "../config/sessions/paths.js";
+import { loadSessionStore } from "../config/sessions/store.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { resolveUserPath } from "../utils.js";
@@ -38,7 +43,13 @@ import {
   type OpenAiEmbeddingClient,
   type VoyageEmbeddingClient,
 } from "./embeddings.js";
-import { bm25RankToScore, buildFtsQuery, mergeHybridResults } from "./hybrid.js";
+import { HotSessionIndex } from "./hot-session.js";
+import {
+  bm25RankToScore,
+  buildFtsQuery,
+  mergeHybridResults,
+  mergeHybridResultsRrf,
+} from "./hybrid.js";
 import {
   buildFileEntry,
   chunkMarkdown,
@@ -165,6 +176,15 @@ export class MemoryIndexManager implements MemorySearchManager {
     { lastSize: number; pendingBytes: number; pendingMessages: number }
   >();
   private sessionWarm = new Set<string>();
+  private hotIndex: HotSessionIndex | null = null;
+  private tokenMetrics = {
+    enabled: false,
+    queryCount: 0,
+    queryChars: 0,
+    indexCount: 0,
+    indexChars: 0,
+    lastQueryAt: undefined as number | undefined,
+  };
   private syncing: Promise<void> | null = null;
 
   static async get(params: {
@@ -241,6 +261,15 @@ export class MemoryIndexManager implements MemorySearchManager {
     if (meta?.vectorDims) {
       this.vector.dims = meta.vectorDims;
     }
+
+    this.tokenMetrics.enabled = Boolean(this.settings.experimental.tokenMetrics);
+
+    if (this.settings.experimental.threeTier && this.settings.experimental.hotSession.enabled) {
+      this.hotIndex = new HotSessionIndex({
+        maxLines: this.settings.experimental.hotSession.maxLines,
+      });
+    }
+
     this.ensureWatcher();
     this.ensureSessionListener();
     this.ensureIntervalSync();
@@ -300,8 +329,17 @@ export class MemoryIndexManager implements MemorySearchManager {
       ? await this.searchVector(queryVec, candidates).catch(() => [])
       : [];
 
+    const hotResults = await this.searchHot({
+      query: cleaned,
+      sessionKey: opts?.sessionKey,
+      limit: maxResults,
+    });
+
     if (!hybrid.enabled) {
-      return vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+      const warm = vectorResults
+        .filter((entry) => entry.score >= minScore)
+        .slice(0, Math.max(0, maxResults - hotResults.length));
+      return [...hotResults, ...warm].slice(0, maxResults);
     }
 
     const merged = this.mergeHybridResults({
@@ -311,7 +349,60 @@ export class MemoryIndexManager implements MemorySearchManager {
       textWeight: hybrid.textWeight,
     });
 
-    return merged.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+    const warm = merged.filter((entry) => entry.score >= minScore);
+    return [...hotResults, ...warm].slice(0, maxResults);
+  }
+
+  private async searchHot(params: {
+    query: string;
+    sessionKey?: string;
+    limit: number;
+  }): Promise<MemorySearchResult[]> {
+    if (!this.hotIndex) {
+      return [];
+    }
+    const sessionKey = params.sessionKey?.trim() ?? "";
+    if (!sessionKey) {
+      return [];
+    }
+    const sessionFile = this.resolveSessionFileFromKey(sessionKey);
+    if (!sessionFile) {
+      return [];
+    }
+    await this.hotIndex.update(sessionFile).catch(() => undefined);
+    const relPath = this.sessionPathForFile(sessionFile);
+    const results = this.hotIndex.search({
+      absPath: sessionFile,
+      relPath,
+      query: params.query,
+      limit: Math.max(1, params.limit),
+    });
+    return results.map((r) => ({
+      path: r.path,
+      startLine: r.startLine,
+      endLine: r.endLine,
+      score: 1 + r.score,
+      snippet: r.snippet,
+      source: "hot",
+    }));
+  }
+
+  private resolveSessionFileFromKey(sessionKey: string): string | null {
+    try {
+      const storePath = resolveDefaultSessionStorePath(this.agentId);
+      const store = loadSessionStore(storePath, { skipCache: true });
+      const entry = store[sessionKey] as { sessionId?: string; sessionFile?: string } | undefined;
+      if (!entry?.sessionId) {
+        return null;
+      }
+      const file = entry.sessionFile?.trim();
+      if (file) {
+        return file;
+      }
+      return resolveSessionTranscriptPath(entry.sessionId, this.agentId);
+    } catch {
+      return null;
+    }
   }
 
   private async searchVector(
@@ -364,28 +455,35 @@ export class MemoryIndexManager implements MemorySearchManager {
     vectorWeight: number;
     textWeight: number;
   }): MemorySearchResult[] {
-    const merged = mergeHybridResults({
-      vector: params.vector.map((r) => ({
-        id: r.id,
-        path: r.path,
-        startLine: r.startLine,
-        endLine: r.endLine,
-        source: r.source,
-        snippet: r.snippet,
-        vectorScore: r.score,
-      })),
-      keyword: params.keyword.map((r) => ({
-        id: r.id,
-        path: r.path,
-        startLine: r.startLine,
-        endLine: r.endLine,
-        source: r.source,
-        snippet: r.snippet,
-        textScore: r.textScore,
-      })),
-      vectorWeight: params.vectorWeight,
-      textWeight: params.textWeight,
-    });
+    const vector = params.vector.map((r) => ({
+      id: r.id,
+      path: r.path,
+      startLine: r.startLine,
+      endLine: r.endLine,
+      source: r.source,
+      snippet: r.snippet,
+      vectorScore: r.score,
+    }));
+    const keyword = params.keyword.map((r) => ({
+      id: r.id,
+      path: r.path,
+      startLine: r.startLine,
+      endLine: r.endLine,
+      source: r.source,
+      snippet: r.snippet,
+      textScore: r.textScore,
+    }));
+
+    const merged =
+      this.settings.query.hybrid.merge === "rrf"
+        ? mergeHybridResultsRrf({ vector, keyword, k: this.settings.query.hybrid.rrfK })
+        : mergeHybridResults({
+            vector,
+            keyword,
+            vectorWeight: params.vectorWeight,
+            textWeight: params.textWeight,
+          });
+
     return merged.map((entry) => entry as MemorySearchResult);
   }
 
@@ -562,6 +660,36 @@ export class MemoryIndexManager implements MemorySearchManager {
         lastError: this.batchFailureLastError,
         lastProvider: this.batchFailureLastProvider,
       },
+      custom: this.tokenMetrics.enabled
+        ? {
+            tokenMetrics: {
+              queryCount: this.tokenMetrics.queryCount,
+              queryChars: this.tokenMetrics.queryChars,
+              queryApproxTokens: Math.ceil(this.tokenMetrics.queryChars / 4),
+              indexCount: this.tokenMetrics.indexCount,
+              indexChars: this.tokenMetrics.indexChars,
+              indexApproxTokens: Math.ceil(this.tokenMetrics.indexChars / 4),
+              lastQueryAt: this.tokenMetrics.lastQueryAt,
+            },
+            threeTier: {
+              enabled: this.settings.experimental.threeTier,
+              hotSession: {
+                enabled: Boolean(this.hotIndex),
+                maxLines: this.settings.experimental.hotSession.maxLines,
+              },
+            },
+          }
+        : this.settings.experimental.threeTier
+          ? {
+              threeTier: {
+                enabled: true,
+                hotSession: {
+                  enabled: Boolean(this.hotIndex),
+                  maxLines: this.settings.experimental.hotSession.maxLines,
+                },
+              },
+            }
+          : undefined,
     };
   }
 
@@ -711,7 +839,16 @@ export class MemoryIndexManager implements MemorySearchManager {
     const dir = path.dirname(dbPath);
     ensureDir(dir);
     const { DatabaseSync } = requireNodeSqlite();
-    return new DatabaseSync(dbPath, { allowExtension: this.settings.store.vector.enabled });
+    const db = new DatabaseSync(dbPath, { allowExtension: this.settings.store.vector.enabled });
+    if (this.settings.experimental.threeTier) {
+      // Opt-in WAL for better write concurrency and reduced sync overhead.
+      try {
+        db.exec("PRAGMA journal_mode=WAL;");
+        db.exec("PRAGMA synchronous=NORMAL;");
+        db.exec("PRAGMA temp_store=MEMORY;");
+      } catch {}
+    }
+    return db;
   }
 
   private seedEmbeddingCache(sourceDb: DatabaseSync): void {
@@ -857,6 +994,11 @@ export class MemoryIndexManager implements MemorySearchManager {
       const sessionFile = update.sessionFile;
       if (!this.isSessionFileForAgent(sessionFile)) {
         return;
+      }
+      if (this.hotIndex) {
+        void this.hotIndex.update(sessionFile).catch((err) => {
+          log.debug(`memory hot session update failed: ${String(err)}`);
+        });
       }
       this.scheduleSessionDirty(sessionFile);
     });
@@ -2114,6 +2256,10 @@ export class MemoryIndexManager implements MemorySearchManager {
     if (texts.length === 0) {
       return [];
     }
+    if (this.tokenMetrics.enabled) {
+      this.tokenMetrics.indexCount += texts.length;
+      this.tokenMetrics.indexChars += texts.reduce((sum, t) => sum + t.length, 0);
+    }
     let attempt = 0;
     let delayMs = EMBEDDING_RETRY_BASE_DELAY_MS;
     while (true) {
@@ -2161,6 +2307,11 @@ export class MemoryIndexManager implements MemorySearchManager {
   }
 
   private async embedQueryWithTimeout(text: string): Promise<number[]> {
+    if (this.tokenMetrics.enabled) {
+      this.tokenMetrics.queryCount += 1;
+      this.tokenMetrics.queryChars += text.length;
+      this.tokenMetrics.lastQueryAt = Date.now();
+    }
     const timeoutMs = this.resolveEmbeddingTimeout("query");
     log.debug("memory embeddings: query start", { provider: this.provider.id, timeoutMs });
     return await this.withTimeout(
