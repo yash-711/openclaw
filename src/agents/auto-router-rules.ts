@@ -14,6 +14,8 @@ import type { ComplexityTier } from "../config/types.auto-router.js";
 const SIMPLE_PATTERNS: RegExp[] = [
   /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|sure|bye|good morning|good night|gm|gn)\b/i,
   /^what('s| is) (the )?(time|date|day|weather)\b/i,
+  /\bwhat\s+(time|day|date)\s+is\s+it\b/i,
+  /\bwhat('s| is)\s+today('s)?\s+(date|day)\b/i,
   /^(who|what|where|when) (is|are|was|were) /i,
   /^(show|list|get|find|lookup|check)\b/i,
 ];
@@ -31,7 +33,7 @@ const COMPLEX_PATTERNS: RegExp[] = [
   /\b(architect(ure)?|design (system|pattern|a ))\b/i,
   /\b(refactor|rewrite|implement|build|create)\b.{20,}/i,
   /\b(multi[- ]?file|codebase|project|repository)\b/i,
-  /\b(deploy|infrastructure|ci\/?cd|pipeline|kubernetes|docker)\b/i,
+  /\b(deploy|infrastructure|ci\/?cd|pipeline|kubernetes|docker)\b.*\b(architect|scale|design|migration|cluster|orchestrat)/i,
   /\b(database (schema|design|migration))\b/i,
   /\b(full[- ]?stack|end[- ]to[- ]end|microservice)\b/i,
 ];
