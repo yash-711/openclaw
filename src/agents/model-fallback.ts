@@ -5,6 +5,7 @@ import {
   isProfileInCooldown,
   resolveAuthProfileOrder,
 } from "./auth-profiles.js";
+import { isAutoModelEnabled, resolveAutoModel } from "./auto-router.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
 import {
   coerceToFailoverError,
@@ -131,6 +132,17 @@ function resolveFallbackCandidates(params: {
   model: string;
   /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
   fallbacksOverride?: string[];
+  /** When in auto mode, the user message for classification. */
+  autoMessage?: string;
+  /** Catalog entries for auto-router model scoring. */
+  autoCatalog?: Array<{
+    id: string;
+    name: string;
+    provider: string;
+    contextWindow?: number;
+    reasoning?: boolean;
+    input?: Array<"text" | "image">;
+  }>;
 }): ModelCandidate[] {
   const primary = params.cfg
     ? resolveConfiguredModelRef({
@@ -141,8 +153,20 @@ function resolveFallbackCandidates(params: {
     : null;
   const defaultProvider = primary?.provider ?? DEFAULT_PROVIDER;
   const defaultModel = primary?.model ?? DEFAULT_MODEL;
-  const provider = String(params.provider ?? "").trim() || defaultProvider;
-  const model = String(params.model ?? "").trim() || defaultModel;
+  let provider = String(params.provider ?? "").trim() || defaultProvider;
+  let model = String(params.model ?? "").trim() || defaultModel;
+
+  // When in auto mode, prepend the auto-selected model to the fallback chain
+  if (params.cfg && params.autoMessage && isAutoModelEnabled(params.cfg)) {
+    const autoResult = resolveAutoModel({
+      message: params.autoMessage,
+      cfg: params.cfg,
+      catalog: params.autoCatalog,
+    });
+    provider = autoResult.selectedModel.provider;
+    model = autoResult.selectedModel.model;
+  }
+
   const aliasIndex = buildModelAliasIndex({
     cfg: params.cfg ?? {},
     defaultProvider,
@@ -211,6 +235,17 @@ export async function runWithModelFallback<T>(params: {
   agentDir?: string;
   /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
   fallbacksOverride?: string[];
+  /** When in auto mode, the user message for classification. */
+  autoMessage?: string;
+  /** Catalog entries for auto-router model scoring. */
+  autoCatalog?: Array<{
+    id: string;
+    name: string;
+    provider: string;
+    contextWindow?: number;
+    reasoning?: boolean;
+    input?: Array<"text" | "image">;
+  }>;
   run: (provider: string, model: string) => Promise<T>;
   onError?: (attempt: {
     provider: string;
@@ -230,6 +265,8 @@ export async function runWithModelFallback<T>(params: {
     provider: params.provider,
     model: params.model,
     fallbacksOverride: params.fallbacksOverride,
+    autoMessage: params.autoMessage,
+    autoCatalog: params.autoCatalog,
   });
   const authStore = params.cfg
     ? ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false })

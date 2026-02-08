@@ -23,6 +23,8 @@ export type AgentModelEntryConfig = {
 export type AgentModelListConfig = {
   primary?: string;
   fallbacks?: string[];
+  /** Auto-router configuration (only used when primary="auto"). */
+  auto?: import("./types.auto-router.js").AutoRouterConfig;
 };
 
 export type AgentContextPruningConfig = {
