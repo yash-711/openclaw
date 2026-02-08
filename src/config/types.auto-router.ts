@@ -31,6 +31,8 @@ export type AutoRouterConfig = {
   preference?: AutoRouterPreference;
   /** Model overrides per complexity tier. */
   tiers?: AutoRouterTiers;
+  /** Timeout in ms for LLM classifier calls (default: 3000). */
+  classifierTimeout?: number;
   /** Auto-discover models from catalog for scoring (default: true). */
   autoDiscover?: boolean;
 };
