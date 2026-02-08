@@ -6,6 +6,9 @@
  * Only activates when `model.primary` is set to `"auto"` in config.
  */
 
+import type { Api, Model } from "@mariozechner/pi-ai";
+import { completeSimple } from "@mariozechner/pi-ai";
+import { getModel } from "@mariozechner/pi-ai";
 import type { OpenClawConfig } from "../config/config.js";
 import type {
   AutoRouterConfig,
@@ -169,17 +172,113 @@ export function getAutoRouterConfig(cfg: OpenClawConfig): AutoRouterConfig | und
   return (model as { auto?: AutoRouterConfig }).auto;
 }
 
+// ---------------------------------------------------------------------------
+// LLM Classifier
+// ---------------------------------------------------------------------------
+
+const CLASSIFICATION_PROMPT = `Classify this user message into exactly one category: SIMPLE, MEDIUM, COMPLEX, or REASONING.
+
+SIMPLE: greetings, yes/no, lookups, short factual questions
+MEDIUM: summarization, code review, how-to guides, explanations
+COMPLEX: architecture design, multi-file code generation, research synthesis
+REASONING: math proofs, logic puzzles, algorithmic problems
+
+Message: "{message}"
+
+Category:`;
+
+const TIER_MAP: Record<string, ComplexityTier> = {
+  SIMPLE: "simple",
+  MEDIUM: "medium",
+  COMPLEX: "complex",
+  REASONING: "reasoning",
+};
+
+/**
+ * Resolve a model ref like "openai/gpt-4.1-nano" into a pi-ai Model object.
+ * Uses the built-in model catalog from @mariozechner/pi-ai.
+ */
+function resolveClassifierModel(modelRef: string): Model<Api> | null {
+  const parts = modelRef.split("/");
+  if (parts.length < 2) return null;
+  const provider = parts[0];
+  const modelId = parts.slice(1).join("/");
+  try {
+    return getModel(provider as any, modelId as any) as Model<Api>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Classify a message using an LLM call with timeout and fallback.
+ */
+async function classifyWithLLM(
+  message: string,
+  classifierModel: string,
+  timeoutMs: number,
+): Promise<ComplexityTier | null> {
+  const model = resolveClassifierModel(classifierModel);
+  if (!model) return null;
+
+  const prompt = CLASSIFICATION_PROMPT.replace("{message}", message.slice(0, 500));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const result = await completeSimple(
+      model,
+      {
+        messages: [
+          { role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() },
+        ],
+      },
+      {
+        maxTokens: 10,
+        temperature: 0,
+        signal: controller.signal,
+      },
+    );
+
+    const text = result.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("")
+      .trim()
+      .toUpperCase();
+
+    // Extract the tier from the response
+    for (const [key, tier] of Object.entries(TIER_MAP)) {
+      if (text.includes(key)) return tier;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Classify a user message into a complexity tier.
+ *
+ * When `autoConfig.classifier` is `"llm"`, attempts LLM-based classification
+ * with a cheap model, falling back to rules on failure.
  */
-export function classifyTask(
+export async function classifyTask(
   message: string,
-  _autoConfig?: AutoRouterConfig,
+  autoConfig?: AutoRouterConfig,
   conversationDepth: number = 0,
   toolMentions: number = 0,
-): ComplexityTier {
-  // Currently only rules-based classification is implemented.
-  // LLM-based classification (autoConfig.classifier === "llm") would go here.
+): Promise<ComplexityTier> {
+  // Try LLM classification if configured
+  if (autoConfig?.classifier === "llm" && autoConfig.classifierModel) {
+    const timeoutMs = autoConfig.classifierTimeout ?? 3000;
+    const result = await classifyWithLLM(message, autoConfig.classifierModel, timeoutMs);
+    if (result) return result;
+    // Fall through to rules-based on failure
+  }
+
   return classifyByRules(message, conversationDepth, toolMentions);
 }
 
@@ -237,19 +336,19 @@ export function scoreModels(
  * Returns the ModelRef to use, along with the classification tier and scores.
  * Falls back to tier defaults if no catalog models are available.
  */
-export function resolveAutoModel(params: {
+export async function resolveAutoModel(params: {
   message: string;
   cfg: OpenClawConfig;
   catalog?: ModelCatalogEntry[];
   conversationDepth?: number;
   toolMentions?: number;
-}): AutoRouterResult {
+}): Promise<AutoRouterResult> {
   const autoConfig = getAutoRouterConfig(params.cfg);
   const preference = autoConfig?.preference ?? "balanced";
   const tiers = autoConfig?.tiers ?? {};
 
   // 1. Classify the task
-  const tier = classifyTask(
+  const tier = await classifyTask(
     params.message,
     autoConfig,
     params.conversationDepth,

@@ -175,7 +175,7 @@ function resolveImageFallbackCandidates(params: {
   return candidates;
 }
 
-function resolveFallbackCandidates(params: {
+async function resolveFallbackCandidates(params: {
   cfg: OpenClawConfig | undefined;
   provider: string;
   model: string;
@@ -192,7 +192,7 @@ function resolveFallbackCandidates(params: {
     reasoning?: boolean;
     input?: Array<"text" | "image">;
   }>;
-}): ModelCandidate[] {
+}): Promise<ModelCandidate[]> {
   const primary = params.cfg
     ? resolveConfiguredModelRef({
         cfg: params.cfg,
@@ -207,7 +207,7 @@ function resolveFallbackCandidates(params: {
 
   // When in auto mode, prepend the auto-selected model to the fallback chain
   if (params.cfg && params.autoMessage && isAutoModelEnabled(params.cfg)) {
-    const autoResult = resolveAutoModel({
+    const autoResult = await resolveAutoModel({
       message: params.autoMessage,
       cfg: params.cfg,
       catalog: params.autoCatalog,

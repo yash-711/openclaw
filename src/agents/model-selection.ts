@@ -293,7 +293,7 @@ export function resolveConfiguredModelRef(params: {
  *
  * @returns The resolved ModelRef and optional auto-router metadata.
  */
-export function resolveConfiguredModelRefWithAuto(params: {
+export async function resolveConfiguredModelRefWithAuto(params: {
   cfg: OpenClawConfig;
   defaultProvider: string;
   defaultModel: string;
@@ -301,9 +301,9 @@ export function resolveConfiguredModelRefWithAuto(params: {
   catalog?: ModelCatalogEntry[];
   conversationDepth?: number;
   toolMentions?: number;
-}): { ref: ModelRef; autoResult?: AutoRouterResult } {
+}): Promise<{ ref: ModelRef; autoResult?: AutoRouterResult }> {
   if (params.message && isAutoModelEnabled(params.cfg)) {
-    const result = resolveAutoModel({
+    const result = await resolveAutoModel({
       message: params.message,
       cfg: params.cfg,
       catalog: params.catalog,
