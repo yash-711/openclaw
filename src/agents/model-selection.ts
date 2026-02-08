@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentConfig, resolveAgentModelPrimary } from "./agent-scope.js";
+import { isAutoModelEnabled, resolveAutoModel, type AutoRouterResult } from "./auto-router.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
 import { normalizeGoogleModelId } from "./models-config.providers.js";
@@ -282,6 +283,43 @@ export function resolveConfiguredModelRef(params: {
     }
   }
   return { provider: params.defaultProvider, model: params.defaultModel };
+}
+
+/**
+ * Resolve the configured model, with auto-router support.
+ *
+ * When `model.primary` is `"auto"`, classifies the message and picks
+ * the optimal model. Otherwise delegates to `resolveConfiguredModelRef`.
+ *
+ * @returns The resolved ModelRef and optional auto-router metadata.
+ */
+export function resolveConfiguredModelRefWithAuto(params: {
+  cfg: OpenClawConfig;
+  defaultProvider: string;
+  defaultModel: string;
+  message?: string;
+  catalog?: ModelCatalogEntry[];
+  conversationDepth?: number;
+  toolMentions?: number;
+}): { ref: ModelRef; autoResult?: AutoRouterResult } {
+  if (params.message && isAutoModelEnabled(params.cfg)) {
+    const result = resolveAutoModel({
+      message: params.message,
+      cfg: params.cfg,
+      catalog: params.catalog,
+      conversationDepth: params.conversationDepth,
+      toolMentions: params.toolMentions,
+    });
+    return { ref: result.selectedModel, autoResult: result };
+  }
+
+  return {
+    ref: resolveConfiguredModelRef({
+      cfg: params.cfg,
+      defaultProvider: params.defaultProvider,
+      defaultModel: params.defaultModel,
+    }),
+  };
 }
 
 export function resolveDefaultModelForAgent(params: {
