@@ -22,6 +22,7 @@ Prepare a PR branch for merge with review fixes, green gates, and an updated hea
 - Do not run gateway stop commands. Do not kill processes. Do not touch port 18792.
 - Do not run `git clean -fdx`.
 - Do not run `git add -A` or `git add .`. Stage only specific files changed.
+- Do not push to GitHub until the maintainer explicitly approves the push step.
 
 ## Execution Rule
 
@@ -30,7 +31,7 @@ Prepare a PR branch for merge with review fixes, green gates, and an updated hea
 
 ## Known Footguns
 
-- If you see "fatal: not a git repository", you are in the wrong directory. Use `~/openclaw`.
+- If you see "fatal: not a git repository", you are in the wrong directory. Use `~/dev/openclaw` if available; otherwise ask user.
 - Do not run `git clean -fdx`.
 - Do not run `git add -A` or `git add .`.
 
@@ -190,6 +191,8 @@ if [ "$head" = "main" ] || [ "$head" = "master" ]; then
 fi
 git push --force-with-lease prhead HEAD:$head
 ```
+
+Before running the command above, pause and ask for explicit maintainer go-ahead to perform the push.
 
 10. Verify PR is not behind main (Mandatory)
 

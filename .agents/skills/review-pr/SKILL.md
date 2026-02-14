@@ -20,6 +20,7 @@ Perform a thorough review-only PR assessment and return a structured recommendat
 - Never push to `main` or `origin/main`, not during review, not ever.
 - Do not run `git push` at all during review. Treat review as read only.
 - Do not stop or kill the gateway. Do not run gateway stop commands. Do not kill processes on port 18792.
+- Do not perform any GitHub write action (comments, assignees, labels, state changes) unless maintainer explicitly approves it.
 
 ## Execution Rule
 
@@ -28,7 +29,7 @@ Perform a thorough review-only PR assessment and return a structured recommendat
 
 ## Known Failure Modes
 
-- If you see "fatal: not a git repository", you are in the wrong directory. Use `~/openclaw`.
+- If you see "fatal: not a git repository", you are in the wrong directory. Use `~/dev/openclaw` if available; otherwise ask user.
 - Do not stop after printing the checklist. That is not completion.
 
 ## Writing Style for Output
@@ -51,7 +52,7 @@ Create a checklist of all review steps, print it, then continue and execute the 
 Use an isolated worktree for all review work.
 
 ```sh
-cd ~/Development/openclaw
+cd ~/dev/openclaw
 # Sanity: confirm you are in the repo
 git rev-parse --show-toplevel
 
@@ -99,9 +100,9 @@ git log --oneline --all --grep="<keyword_from_pr_title>" | head -20
 
 If it already exists, call it out as a BLOCKER or at least IMPORTANT.
 
-3. Claim the PR
+3. Optional claim step, only with explicit approval
 
-Assign yourself so others know someone is reviewing. Skip if the PR looks like spam or is a draft you plan to recommend closing.
+If the maintainer asks to claim the PR, assign yourself. Otherwise skip this.
 
 ```sh
 gh_user=$(gh api user --jq .login)

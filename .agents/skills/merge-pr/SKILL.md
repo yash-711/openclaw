@@ -20,6 +20,7 @@ Merge a prepared PR via `gh pr merge --squash` and clean up the worktree after s
 - Use `gh pr merge --squash` as the only path to `main`.
 - Do not run `git push` at all during merge.
 - Do not run gateway stop commands. Do not kill processes. Do not touch port 18792.
+- Do not execute merge or PR-comment GitHub write actions until maintainer explicitly approves.
 
 ## Execution Rule
 
@@ -28,7 +29,7 @@ Merge a prepared PR via `gh pr merge --squash` and clean up the worktree after s
 
 ## Known Footguns
 
-- If you see "fatal: not a git repository", you are in the wrong directory. Use `~/Development/openclaw`, not `~/openclaw`.
+- If you see "fatal: not a git repository", you are in the wrong directory. Use `~/dev/openclaw` if available; otherwise ask user.
 - Read `.local/review.md` and `.local/prep.md` in the worktree. Do not skip.
 - Clean up the real worktree directory `.worktrees/pr-<PR>` only after a successful merge.
 - Expect cleanup to remove `.local/` artifacts.
@@ -49,7 +50,7 @@ Create a checklist of all merge steps, print it, then continue and execute the c
 Use an isolated worktree for all merge work.
 
 ```sh
-cd ~/Development/openclaw
+cd ~/dev/openclaw
 # Sanity: confirm you are in the repo
 git rev-parse --show-toplevel
 
@@ -132,6 +133,8 @@ else
 fi
 ```
 
+Before running merge command, pause and ask for explicit maintainer go-ahead.
+
 If merge fails, report the error and stop. Do not retry in a loop.
 If the PR needs changes beyond what `/preparepr` already did, stop and say to run `/preparepr` again.
 
@@ -147,13 +150,7 @@ echo "merge_sha=$merge_sha"
 Use a literal multiline string or heredoc for newlines.
 
 ```sh
-gh pr comment <PR> -F - <<'EOF'
-Merged via squash.
-
-- Merge commit: $merge_sha
-
-Thanks @$contrib!
-EOF
+gh pr comment <PR> --body "$(printf 'Merged via squash.\n\n- Merge commit: %s\n\nThanks @%s!\n' \"$merge_sha\" \"$contrib\")"
 ```
 
 6. Verify PR state is MERGED
@@ -167,7 +164,7 @@ gh pr view <PR> --json state --jq .state
 Run cleanup only if step 6 returned `MERGED`.
 
 ```sh
-cd ~/Development/openclaw
+cd ~/dev/openclaw
 
 git worktree remove ".worktrees/pr-<PR>" --force
 
